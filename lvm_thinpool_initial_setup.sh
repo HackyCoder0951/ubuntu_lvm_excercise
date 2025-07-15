@@ -16,25 +16,18 @@ FS_TYPE="ext4"
 # === Cleanup Phase ===
 echo "🧼 Cleaning up previous setup on $DISK..."
 
-# Unmount /data and /dev/sdb1 if mounted
 umount "$MOUNT_POINT" 2>/dev/null || true
 umount "${DISK}1" 2>/dev/null || true
-
-# Kill any processes using the disk or its partition
 fuser -vk "$DISK" 2>/dev/null || true
 fuser -vk "${DISK}1" 2>/dev/null || true
 
-# Remove existing LVM stack (if exists)
 lvremove -fy "$VG_NAME" 2>/dev/null || true
 vgremove -fy "$VG_NAME" 2>/dev/null || true
 pvremove -ff -y "${DISK}1" 2>/dev/null || true
 
-# Wipe filesystem and partition table
 echo "🧽 Wiping filesystems and partition table..."
 wipefs -a "$DISK" || true
 dd if=/dev/zero of="$DISK" bs=512 count=10000 status=none || true
-
-# Refresh kernel partition table
 partprobe "$DISK" || echo "⚠️ Could not refresh partition table. Reboot may be needed."
 
 # === Dependency Check ===
@@ -64,9 +57,9 @@ vgcreate "$VG_NAME" "$PART"
 # 4. Create Metadata LV
 lvcreate -L 1G -n "$METADATA_LV" "$VG_NAME"
 
-# 5. Calculate thin pool size (leave 128MB buffer)
+# 5. Calculate thin pool size (leave 1GB headroom)
 FREE_SIZE=$(vgs "$VG_NAME" --units m --noheadings -o vg_free | tr -d '[:space:]' | sed 's/m//' | awk '{printf("%d", $1)}')
-THINPOOL_SIZE_MB=$((FREE_SIZE - 128))
+THINPOOL_SIZE_MB=$((FREE_SIZE - 1024))
 
 if (( THINPOOL_SIZE_MB <= 0 )); then
   echo "❌ Not enough space to create thin pool. Only ${FREE_SIZE}MB free."
@@ -78,14 +71,14 @@ echo "🧮 Free VG space: ${FREE_SIZE}MB, using ${THINPOOL_SIZE_MB}MB for thin p
 # 6. Create thin pool LV
 lvcreate -L "${THINPOOL_SIZE_MB}M" -n "$THINPOOL_NAME" "$VG_NAME"
 
-# 7. Convert to thin pool
-lvconvert --type thin-pool --poolmetadata "${VG_NAME}/${METADATA_LV}" "${VG_NAME}/${THINPOOL_NAME}"
+# 7. Convert to thin pool with chunk size
+lvconvert --chunksize 512K --type thin-pool --poolmetadata "${VG_NAME}/${METADATA_LV}" "${VG_NAME}/${THINPOOL_NAME}"
 
 # 8. Enable auto-extend
 lvchange --metadataprofile thin-performance "${VG_NAME}/${THINPOOL_NAME}" || true
 lvs --segments -o+seg_monitor
 
-# 9. Create 40TB thin LV
+# 9. Create 40TB thin-provisioned LV
 lvcreate -V "$THIN_LV_SIZE" --thinpool "$THINPOOL_NAME" -n "$THIN_LV" "$VG_NAME"
 
 # 10. Format the LV
