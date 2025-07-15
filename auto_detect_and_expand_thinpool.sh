@@ -1,29 +1,23 @@
 #!/bin/bash
 
-# ================================
 VG_NAME="vgthin"
 THINPOOL_NAME="thinpool"
 EXPAND_UNIT="G"
 LOG_FILE="/var/log/lvm_auto_expand.log"
-# ================================
 
 log() {
     echo "[$(date +'%F %T')] $1" | tee -a "$LOG_FILE"
 }
 
-# Scan /dev/sd[b-z] and /dev/nvme*n1 to avoid /dev/fd0, /dev/sr0, /dev/loop*, etc.
 get_new_disks() {
     for disk in /dev/sd[b-z] /dev/nvme*n1; do
-        # Skip non-block devices
         [ -b "$disk" ] || continue
 
-        # Skip if already partitioned
         if lsblk "$disk" | grep -q -E "─[[:alnum:]]+"; then
             log "⚠️  Skipping $disk (already partitioned)"
             continue
         fi
 
-        # Skip if already a PV
         if pvs | grep -q "$disk"; then
             log "⚠️  Skipping $disk (already a PV)"
             continue
@@ -38,16 +32,21 @@ expand_thin_pool() {
     local thinpool="$2"
     local free_size=$(vgs "$vg" --units g --nosuffix --noheadings -o vg_free | awk '{print int($1)}')
 
-    free_size=$((free_size - 1))  # Leave buffer
-    if (( free_size > 0 )); then
+    free_size=$((free_size - 1))  # Reserve 1G buffer
+    if (( free_size >= 1 )); then
         log "📈 Extending $vg/$thinpool by ${free_size}G"
-        lvextend -L +${free_size}G /dev/${vg}/${thinpool} && log "✅ Thin pool extended successfully"
+        if lvextend -L +${free_size}G /dev/${vg}/${thinpool}; then
+            log "✅ Thin pool extended successfully"
+            DATA_USAGE=$(lvs --noheadings -o data_percent /dev/${vg}/${thinpool} | awk '{printf "%.2f", $1}')
+            log "📊 Thin pool usage after expansion: ${DATA_USAGE}%"
+        else
+            log "❌ lvextend failed. Possibly due to rounding or extent shortage."
+        fi
     else
         log "⚠️ Not enough free space after buffer — skipping lvextend."
     fi
 }
 
-# =========== MAIN ===========
 log "🔍 Scanning for new unpartitioned disks..."
 
 get_new_disks | while read -r disk; do
