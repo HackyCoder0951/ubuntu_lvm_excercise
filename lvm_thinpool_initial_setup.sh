@@ -10,6 +10,7 @@ THIN_LV_SIZE="5T"
 MOUNT_POINT="/data"
 FS_TYPE="ext4"
 BUFFER_MB=64
+RESERVED_MB=1280
 
 echo "🧼 Cleaning up previous setup on $DISK..."
 umount "$MOUNT_POINT" 2>/dev/null || true
@@ -41,11 +42,11 @@ partprobe "$DISK"
 
 echo "🛠️ Creating LVM structure..."
 pvcreate "$PART"
-vgcreate "$VG_NAME" "$PART"
+vgcreate --physicalextentsize 16M "$VG_NAME" "$PART"
 lvcreate -L 1G -n "$METADATA_LV" "$VG_NAME"
 
 FREE_SIZE=$(vgs "$VG_NAME" --units m --noheadings -o vg_free | tr -d '[:space:]' | sed 's/m//')
-THINPOOL_SIZE_MB=$((FREE_SIZE - BUFFER_MB))
+THINPOOL_SIZE_MB=$((FREE_SIZE - BUFFER_MB - RESERVED_MB))
 
 if (( THINPOOL_SIZE_MB <= 0 )); then
   echo "❌ Not enough space to create thin pool."
