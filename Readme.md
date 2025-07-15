@@ -232,5 +232,5 @@ MIT License — Free to use, modify, and distribute for personal and commercial 
 
 ## 👨‍💻 Maintainer
 
-Built and maintained by **[Your Name or Team]**  
+Built and maintained by **Hacky Coder 0951**  
 Designed for scalable, cloud-ready Linux storage automation.
