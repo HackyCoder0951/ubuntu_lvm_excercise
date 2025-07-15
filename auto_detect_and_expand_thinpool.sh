@@ -1,10 +1,9 @@
 #!/bin/bash
 
 # ================================
-# CONFIGURATION
 VG_NAME="vgthin"
 THINPOOL_NAME="thinpool"
-EXPAND_UNIT="G"  # T for TB, G for GB — determined automatically per disk
+EXPAND_UNIT="G"
 LOG_FILE="/var/log/lvm_auto_expand.log"
 # ================================
 
@@ -12,32 +11,29 @@ log() {
     echo "[$(date +'%F %T')] $1" | tee -a "$LOG_FILE"
 }
 
-# List unpartitioned disks (no partitions, no LVM, no mount)
 get_new_disks() {
     lsblk -dn -o NAME,TYPE | awk '$2=="disk"{print "/dev/"$1}' | while read disk; do
-        if ! lsblk "$disk" | grep -q "^├─"; then
-            if ! pvs "$disk"1 &>/dev/null && ! vgs "$disk" &>/dev/null; then
-                echo "$disk"
-            fi
-        fi
+        # Skip if already partitioned or in use
+        if lsblk "$disk" | grep -q -E "─[[:alnum:]]+"; then continue; fi
+        if pvs | grep -q "$disk"; then continue; fi
+        echo "$disk"
     done
 }
 
-# Expand the thin pool by remaining free space
 expand_thin_pool() {
     local vg="$1"
     local thinpool="$2"
-    local free_size=$(vgs "$vg" --noheadings -o vg_free --units $EXPAND_UNIT | tr -dc '0-9.')
-    
-    if (( $(echo "$free_size > 0" | bc -l) )); then
-        log "Extending $vg/$thinpool by ${free_size}${EXPAND_UNIT}"
-        lvextend -L +${free_size}${EXPAND_UNIT} /dev/${vg}/${thinpool} && log "✅ Extended successfully"
+    local free_size=$(vgs "$vg" --units g --nosuffix --noheadings -o vg_free | awk '{print int($1)}')
+
+    if (( free_size > 0 )); then
+        log "Extending $vg/$thinpool by ${free_size}G"
+        lvextend -L +${free_size}G /dev/${vg}/${thinpool} && log "✅ Extended successfully"
     else
         log "⚠️ No free space in volume group to extend thin pool."
     fi
 }
 
-# MAIN
+# =========== MAIN ===========
 log "🔍 Scanning for new unpartitioned disks..."
 new_disks=$(get_new_disks)
 
@@ -55,6 +51,7 @@ for disk in $new_disks; do
     parted -a optimal "$disk" mkpart primary 0% 100%
     part="${disk}1"
     sleep 2
+    partprobe "$disk"
 
     # Create PV and extend VG
     log "🔧 Creating PV and adding $part to $VG_NAME..."
