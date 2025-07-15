@@ -3,49 +3,57 @@
 set -e
 
 # ========== CONFIGURATION ==========
-DISK="/dev/sdb"            # Target disk
+DISK="/dev/sdb"
 VG_NAME="vgthin"
 THINPOOL_NAME="thinpool"
 METADATA_LV="thinmeta"
 THIN_LV="lvdata"
-THIN_LV_SIZE="40T"         # 40TB virtual size
+THIN_LV_SIZE="40T"
 MOUNT_POINT="/data"
-FS_TYPE="ext4"             # ext4 or xfs
+FS_TYPE="ext4"
 # ===================================
 
-# ==== Clean up if /dev/sdb or /dev/sdb1 already in use ====
-echo "🔍 Checking if /dev/sdb is already used..."
+echo "🔍 Checking if $DISK is already used..."
 
-if pvs | grep -q "/dev/sdb"; then
-  echo "⚠️ Detected existing LVM configuration on /dev/sdb. Cleaning it up..."
+# Unmount any mount points using this disk
+umount "$MOUNT_POINT" 2>/dev/null || true
+umount "${DISK}1" 2>/dev/null || true
 
-  # Unmount if mounted
-  umount "$MOUNT_POINT" 2>/dev/null || true
+# Kill processes using the disk
+echo "🔫 Killing any processes using $DISK..."
+fuser -v "$DISK" 2>/dev/null || true
+fuser -vk "$DISK" 2>/dev/null || true
 
-  # Remove VG, LVs
-  VG_EXIST=$(pvs --noheadings -o vg_name /dev/sdb | awk '{print $1}')
+# Deactivate and remove existing LVM setup
+if pvs | grep -q "$DISK"; then
+  echo "⚠️ Detected existing LVM on $DISK — cleaning it..."
+
+  VG_EXIST=$(pvs --noheadings -o vg_name "$DISK" | awk '{print $1}')
   if [ -n "$VG_EXIST" ]; then
-    echo "💣 Removing Volume Group: $VG_EXIST"
+    echo "📛 Deactivating and removing VG: $VG_EXIST"
+    lvchange -an "$VG_EXIST" 2>/dev/null || true
+    vgchange -an "$VG_EXIST" 2>/dev/null || true
     lvremove -fy "$VG_EXIST" 2>/dev/null || true
     vgremove -fy "$VG_EXIST" 2>/dev/null || true
   fi
 
-  echo "🧹 Removing PV from /dev/sdb"
-  pvremove -ff -y /dev/sdb 2>/dev/null || true
+  echo "🧹 Removing PV from $DISK"
+  pvremove -ff -y "$DISK" 2>/dev/null || true
 fi
 
-# Remove /dev/sdb1 if it exists
-if lsblk /dev/sdb1 &>/dev/null; then
-  echo "🧽 Wiping /dev/sdb1..."
-  umount /dev/sdb1 2>/dev/null || true
-  wipefs -a /dev/sdb1 || true
+# Handle partition if /dev/sdb1 exists
+if lsblk "${DISK}1" &>/dev/null; then
+  echo "🧽 Wiping partition ${DISK}1..."
+  umount "${DISK}1" 2>/dev/null || true
+  fuser -vk "${DISK}1" 2>/dev/null || true
+  wipefs -a "${DISK}1" || true
 fi
 
 # Full disk wipe
-echo "🚫 Wiping partition table on /dev/sdb..."
-wipefs -a /dev/sdb
-dd if=/dev/zero of=/dev/sdb bs=512 count=10000 status=none
-partprobe /dev/sdb || echo "⚠️ Could not re-read partition table. A reboot may be required."
+echo "🚫 Wiping partition table on $DISK..."
+wipefs -a "$DISK" || true
+dd if=/dev/zero of="$DISK" bs=512 count=10000 status=none || true
+partprobe "$DISK" || echo "⚠️ Re-reading partition table failed. A reboot may be needed."
 
 # === Dependency Check ===
 echo "🔎 Checking required commands..."
