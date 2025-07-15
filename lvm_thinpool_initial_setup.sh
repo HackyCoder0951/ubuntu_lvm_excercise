@@ -45,11 +45,12 @@ pvcreate "$PART"
 vgcreate --physicalextentsize 16M "$VG_NAME" "$PART"
 lvcreate -L 1G -n "$METADATA_LV" "$VG_NAME"
 
-FREE_SIZE=$(vgs "$VG_NAME" --units m --noheadings -o vg_free | tr -d '[:space:]' | sed 's/m//')
-THINPOOL_SIZE_MB=$((FREE_SIZE - BUFFER_MB - RESERVED_MB))
+FREE_SIZE_RAW=$(vgs "$VG_NAME" --units m --noheadings -o vg_free | tr -d '[:space:]' | sed 's/m//')
+FREE_SIZE=$(printf "%.0f\n" "$FREE_SIZE_RAW")
+THINPOOL_SIZE_MB=$((FREE_SIZE - BUFFER_MB))
 
 if (( THINPOOL_SIZE_MB <= 0 )); then
-  echo "❌ Not enough space to create thin pool."
+  echo "❌ Not enough space to create thin pool. Only ${FREE_SIZE}MB free."
   exit 1
 fi
 
