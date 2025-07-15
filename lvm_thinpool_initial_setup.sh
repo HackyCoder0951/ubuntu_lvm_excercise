@@ -3,7 +3,7 @@
 set -e
 
 # === Dependency Check ===
-for cmd in pvcreate vgcreate lvcreate lvconvert mkfs.ext4 mkfs.xfs mount parted vgs; do
+for cmd in pvcreate vgcreate lvcreate lvconvert mkfs.ext4 mount parted vgs; do
   if ! command -v "$cmd" >/dev/null 2>&1; then
     echo "❌ Required command '$cmd' not found. Please install it first:"
     echo "    sudo apt update && sudo apt install -y lvm2 parted"
@@ -22,43 +22,54 @@ MOUNT_POINT="/data"
 FS_TYPE="ext4"
 # ===================================
 
-# 1. Partition the disk
 echo "📦 Partitioning $DISK..."
 parted -s "$DISK" mklabel gpt
 parted -a optimal "$DISK" mkpart primary 0% 100%
 PART="${DISK}1"
 sleep 2
+partprobe "$DISK" || echo "⚠️ Could not notify kernel. A reboot may be required."
 
-# 2. Create PV
+# Cleanup if rerunning
+umount "$MOUNT_POINT" 2>/dev/null || true
+lvremove -fy "$VG_NAME/$THIN_LV" 2>/dev/null || true
+lvremove -fy "$VG_NAME/$THINPOOL_NAME" 2>/dev/null || true
+lvremove -fy "$VG_NAME/$METADATA_LV" 2>/dev/null || true
+vgremove -fy "$VG_NAME" 2>/dev/null || true
+pvremove -ff -y "$PART" 2>/dev/null || true
+
+# 1. Create PV
 pvcreate "$PART"
 
-# 3. Create VG
+# 2. Create VG
 vgcreate "$VG_NAME" "$PART"
 
-# 4. Create Metadata LV
+# 3. Create Metadata LV
 lvcreate -L 1G -n "$METADATA_LV" "$VG_NAME"
 
-# 5. Create Thin Pool LV using all remaining space
-FREE_SIZE=$(vgs "$VG_NAME" --units m --noheadings -o vg_free | tr -d '[:space:]' | sed 's/m//' | awk '{print int($1)}')
+# 4. Create Thin Pool LV (leave 128MB for conversion)
+FREE_SIZE=$(vgs "$VG_NAME" --units m --noheadings -o vg_free | tr -d '[:space:]' | sed 's/m//')
+THINPOOL_SIZE_MB=$((FREE_SIZE - 128))
 
-if (( FREE_SIZE < 10000 )); then
-  echo "⚠️ Warning: Only ${FREE_SIZE}MB free space. Thin provisioning will work but watch usage!"
+if (( THINPOOL_SIZE_MB <= 0 )); then
+  echo "❌ Not enough space to create thin pool. Only ${FREE_SIZE}MB available."
+  exit 1
 fi
 
-lvcreate -L "${FREE_SIZE}M" -n "$THINPOOL_NAME" "$VG_NAME"
+echo "🧮 Free space: ${FREE_SIZE}MB, allocating ${THINPOOL_SIZE_MB}MB to thin pool..."
 
-# 6. Convert to thin pool
+lvcreate -L "${THINPOOL_SIZE_MB}M" -n "$THINPOOL_NAME" "$VG_NAME"
+
+# 5. Convert to thin pool
 lvconvert --type thin-pool --poolmetadata "${VG_NAME}/${METADATA_LV}" "${VG_NAME}/${THINPOOL_NAME}"
 
-# 7. Enable auto-extension policy
+# 6. Enable auto-extend policy
 lvchange --metadataprofile thin-performance "${VG_NAME}/${THINPOOL_NAME}" || true
 lvs --segments -o+seg_monitor
 
-# 8. Create virtual 40TB Thin LV
-echo "💾 Creating 40TB thin logical volume..."
+# 7. Create 40TB virtual thin LV
 lvcreate -V "$THIN_LV_SIZE" --thinpool "$THINPOOL_NAME" -n "$THIN_LV" "$VG_NAME"
 
-# 9. Format the volume
+# 8. Format the LV
 echo "🧷 Formatting LV with $FS_TYPE..."
 if [ "$FS_TYPE" == "ext4" ]; then
     mkfs.ext4 "/dev/${VG_NAME}/${THIN_LV}"
@@ -69,11 +80,13 @@ else
     exit 1
 fi
 
-# 10. Mount
+# 9. Mount it
 mkdir -p "$MOUNT_POINT"
 mount "/dev/${VG_NAME}/${THIN_LV}" "$MOUNT_POINT"
 
-# 11. Add to fstab
-echo "/dev/${VG_NAME}/${THIN_LV} $MOUNT_POINT $FS_TYPE defaults 0 2" >> /etc/fstab
+# 10. Add to fstab
+if ! grep -qs "$MOUNT_POINT" /etc/fstab; then
+  echo "/dev/${VG_NAME}/${THIN_LV} $MOUNT_POINT $FS_TYPE defaults 0 2" >> /etc/fstab
+fi
 
-echo "✅ 40TB thin-provisioned volume mounted at $MOUNT_POINT"
+echo "✅ Thin-provisioned 40TB volume mounted at $MOUNT_POINT"
