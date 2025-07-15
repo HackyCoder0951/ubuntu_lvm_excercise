@@ -38,27 +38,22 @@ expand_thin_pool() {
     local thinpool="$2"
     local free_size=$(vgs "$vg" --units g --nosuffix --noheadings -o vg_free | awk '{print int($1)}')
 
+    free_size=$((free_size - 1))  # Leave buffer
     if (( free_size > 0 )); then
         log "📈 Extending $vg/$thinpool by ${free_size}G"
         lvextend -L +${free_size}G /dev/${vg}/${thinpool} && log "✅ Thin pool extended successfully"
     else
-        log "⚠️ No free space in VG to extend thin pool."
+        log "⚠️ Not enough free space after buffer — skipping lvextend."
     fi
 }
 
 # =========== MAIN ===========
 log "🔍 Scanning for new unpartitioned disks..."
-new_disks=$(get_new_disks)
 
-if [ -z "$new_disks" ]; then
-    log "✅ No new disks found. Nothing to do."
-    exit 0
-fi
-
-for disk in $new_disks; do
+get_new_disks | while read -r disk; do
+    [ -z "$disk" ] && continue
     log "🧩 Found new disk: $disk"
 
-    # Partition the disk
     log "📦 Partitioning $disk..."
     parted -s "$disk" mklabel gpt
     parted -a optimal "$disk" mkpart primary 0% 100%
@@ -66,11 +61,9 @@ for disk in $new_disks; do
     sleep 2
     partprobe "$disk"
 
-    # Create PV and extend VG
     log "🔧 Creating PV and adding $part to $VG_NAME..."
     pvcreate "$part" && vgextend "$VG_NAME" "$part"
 
-    # Expand thin pool
     expand_thin_pool "$VG_NAME" "$THINPOOL_NAME"
 done
 
