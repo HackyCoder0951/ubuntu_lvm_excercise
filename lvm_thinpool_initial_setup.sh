@@ -13,47 +13,29 @@ MOUNT_POINT="/data"
 FS_TYPE="ext4"
 # ===================================
 
-echo "🔍 Checking if $DISK is already used..."
+# === Cleanup Phase ===
+echo "🧼 Cleaning up previous setup on $DISK..."
 
-# Unmount any mount points using this disk
+# Unmount /data and /dev/sdb1 if mounted
 umount "$MOUNT_POINT" 2>/dev/null || true
 umount "${DISK}1" 2>/dev/null || true
 
-# Kill processes using the disk
-echo "🔫 Killing any processes using $DISK..."
-fuser -v "$DISK" 2>/dev/null || true
+# Kill any processes using the disk or its partition
 fuser -vk "$DISK" 2>/dev/null || true
+fuser -vk "${DISK}1" 2>/dev/null || true
 
-# Deactivate and remove existing LVM setup
-if pvs | grep -q "$DISK"; then
-  echo "⚠️ Detected existing LVM on $DISK — cleaning it..."
+# Remove existing LVM stack (if exists)
+lvremove -fy "$VG_NAME" 2>/dev/null || true
+vgremove -fy "$VG_NAME" 2>/dev/null || true
+pvremove -ff -y "${DISK}1" 2>/dev/null || true
 
-  VG_EXIST=$(pvs --noheadings -o vg_name "$DISK" | awk '{print $1}')
-  if [ -n "$VG_EXIST" ]; then
-    echo "📛 Deactivating and removing VG: $VG_EXIST"
-    lvchange -an "$VG_EXIST" 2>/dev/null || true
-    vgchange -an "$VG_EXIST" 2>/dev/null || true
-    lvremove -fy "$VG_EXIST" 2>/dev/null || true
-    vgremove -fy "$VG_EXIST" 2>/dev/null || true
-  fi
-
-  echo "🧹 Removing PV from $DISK"
-  pvremove -ff -y "$DISK" 2>/dev/null || true
-fi
-
-# Handle partition if /dev/sdb1 exists
-if lsblk "${DISK}1" &>/dev/null; then
-  echo "🧽 Wiping partition ${DISK}1..."
-  umount "${DISK}1" 2>/dev/null || true
-  fuser -vk "${DISK}1" 2>/dev/null || true
-  wipefs -a "${DISK}1" || true
-fi
-
-# Full disk wipe
-echo "🚫 Wiping partition table on $DISK..."
+# Wipe filesystem and partition table
+echo "🧽 Wiping filesystems and partition table..."
 wipefs -a "$DISK" || true
 dd if=/dev/zero of="$DISK" bs=512 count=10000 status=none || true
-partprobe "$DISK" || echo "⚠️ Re-reading partition table failed. A reboot may be needed."
+
+# Refresh kernel partition table
+partprobe "$DISK" || echo "⚠️ Could not refresh partition table. Reboot may be needed."
 
 # === Dependency Check ===
 echo "🔎 Checking required commands..."
@@ -82,7 +64,7 @@ vgcreate "$VG_NAME" "$PART"
 # 4. Create Metadata LV
 lvcreate -L 1G -n "$METADATA_LV" "$VG_NAME"
 
-# 5. Calculate thin pool size (leave 128MB)
+# 5. Calculate thin pool size (leave 128MB buffer)
 FREE_SIZE=$(vgs "$VG_NAME" --units m --noheadings -o vg_free | tr -d '[:space:]' | sed 's/m//' | awk '{printf("%d", $1)}')
 THINPOOL_SIZE_MB=$((FREE_SIZE - 128))
 
