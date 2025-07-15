@@ -47,8 +47,11 @@ vgcreate "$VG_NAME" "$PART"
 lvcreate -L 1G -n "$METADATA_LV" "$VG_NAME"
 
 # 4. Create Thin Pool LV (leave 128MB for conversion)
-FREE_SIZE=$(vgs "$VG_NAME" --units m --noheadings -o vg_free | tr -d '[:space:]' | sed 's/m//')
+FREE_SIZE=$(vgs "$VG_NAME" --units m --noheadings -o vg_free | tr -d '[:space:]' | sed 's/m//' | awk '{printf("%d", $1)}')
 THINPOOL_SIZE_MB=$((FREE_SIZE - 128))
+
+echo "🔍 Free VG space (MB): $FREE_SIZE, allocating: $THINPOOL_SIZE_MB"
+
 
 if (( THINPOOL_SIZE_MB <= 0 )); then
   echo "❌ Not enough space to create thin pool. Only ${FREE_SIZE}MB available."
